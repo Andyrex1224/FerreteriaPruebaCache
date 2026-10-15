@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ferretería - Productos</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7; color: #222; }
+    main { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+    h1 { margin: 0 0 16px; }
+    h2 { font-size: 18px; margin: 0 0 12px; }
+    .controles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    button { padding: 8px 16px; border: 0; border-radius: 6px; background: #1f6feb; color: #fff; cursor: pointer; font-size: 15px; }
+    button:hover { filter: brightness(0.9); }
+    button.sin { background: #d1453b; }
+    button.con { background: #2a9d4b; }
+    input { padding: 8px; border: 1px solid #ccc; border-radius: 6px; width: 120px; font-size: 15px; }
+    .nota { font-size: 13px; color: #666; margin: 0 0 16px; }
+    .tiempos { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+    .tiempo { background: #fff; border-radius: 8px; padding: 12px 16px; flex: 1; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    .tiempo span { display: block; font-size: 13px; color: #666; }
+    .tiempo strong { font-size: 24px; }
+    .comparacion { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    .fila-barra { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .fila-barra .etiqueta { width: 90px; font-weight: 600; flex-shrink: 0; }
+    .fila-barra .valor { width: 90px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    .pista { flex: 1; height: 26px; background: #eef0f3; border-radius: 6px; overflow: hidden; }
+    .barra { height: 100%; width: 0; min-width: 3px; border-radius: 6px; transition: width .4s; }
+    #barraSin { background: #d1453b; }
+    #barraCon { background: #2a9d4b; }
+    #resultado { margin: 8px 0 0; font-weight: 600; }
+    #mensaje { margin-bottom: 12px; color: #b42318; }
+    table { width: 100%; border-collapse: collapse; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #222; color: #fff; position: sticky; top: 0; }
+    td:last-child, th:last-child { text-align: right; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Productos de la ferretería</h1>
+
+  <div class="controles">
+    <button class="sin" onclick="consultar(API + '?cache=false', 'sin')">Ejecutar sin caché</button>
+    <button class="con" onclick="consultar(API, 'con')">Ejecutar con caché</button>
+    <input id="id" type="number" min="1" placeholder="ID">
+    <button onclick="buscarPorId()">Buscar por ID</button>
+  </div>
+  <p class="nota">La primera ejecución con caché va a la base de datos H2 para llenar la caché; desde la segunda se lee de memoria.</p>
+
+  <div class="tiempos">
+    <div class="tiempo"><span>Tiempo de la consulta (backend)</span><strong id="tBackend">—</strong></div>
+    <div class="tiempo"><span>Tiempo total de la petición (frontend)</span><strong id="tTotal">—</strong></div>
+    <div class="tiempo"><span>Registros recibidos</span><strong id="cantidad">—</strong></div>
+  </div>
+
+  <div class="comparacion">
+    <h2>Comparación de velocidad (tiempo de la consulta en el backend)</h2>
+    <div class="fila-barra">
+      <span class="etiqueta">Sin caché</span>
+      <div class="pista"><div class="barra" id="barraSin"></div></div>
+      <span class="valor" id="valorSin">—</span>
+    </div>
+    <div class="fila-barra">
+      <span class="etiqueta">Con caché</span>
+      <div class="pista"><div class="barra" id="barraCon"></div></div>
+      <span class="valor" id="valorCon">—</span>
+    </div>
+    <p id="resultado">Ejecuta las dos consultas para compararlas.</p>
+  </div>
+
+  <div id="mensaje"></div>
+
+  <table>
+    <thead><tr><th>ID</th><th>Nombre</th><th>Precio</th></tr></thead>
+    <tbody id="filas"></tbody>
+  </table>
+</main>
+
+<script>
+  // Si la página la sirve el propio backend (puerto 8080) se usa una ruta relativa;
+  // si se abre desde otro servidor (por ejemplo el puerto 5173) se apunta al backend directamente
+  const API = location.port === '8080' ? '/api/productos' : 'http://localhost:8080/api/productos';
+
+  function buscarPorId() {
+    const id = document.getElementById('id').value;
+    if (!id) {
+      document.getElementById('mensaje').textContent = 'Escribe un ID para buscar.';
+      return;
+    }
+    consultar(API + '/' + id, null);
+  }
+
+  // Último tiempo medido en cada modo, para las barras
+  const tiempos = { sin: null, con: null };
+
+  // modo: 'sin', 'con' o null (búsqueda por ID, no entra en la comparación)
+  async function consultar(url, modo) {
+    document.getElementById('mensaje').textContent = 'Consultando...';
+    document.getElementById('filas').innerHTML = '';
+
+    try {
+      const inicio = performance.now();
+      const respuesta = await fetch(url);
+      const datos = await respuesta.json();
+      const total = performance.now() - inicio;
+
+      // Tiempo que midió el backend (viene en una cabecera de la respuesta)
+      const tBackend = parseFloat(respuesta.headers.get('X-Tiempo-Consulta-ms'));
+      document.getElementById('tBackend').textContent = tBackend.toFixed(2) + ' ms';
+      document.getElementById('tTotal').textContent = total.toFixed(2) + ' ms';
+
+      if (!respuesta.ok) {
+        document.getElementById('cantidad').textContent = 0;
+        document.getElementById('mensaje').textContent = datos.error;
+        return;
+      }
+
+      if (modo) {
+        tiempos[modo] = tBackend;
+        actualizarBarras();
+      }
+
+      const productos = Array.isArray(datos) ? datos : [datos];
+      document.getElementById('cantidad').textContent = productos.length;
+      document.getElementById('mensaje').textContent = '';
+      mostrar(productos);
+    } catch (e) {
+      document.getElementById('mensaje').textContent =
+        'No se pudo conectar con el backend. ¿Está corriendo Main.java? ' +
+        'Abre la página desde http://localhost:8080';
+    }
+  }
+
+  function actualizarBarras() {
+    // La barra más larga es la del tiempo mayor; la otra se dibuja en proporción
+    const max = Math.max(tiempos.sin || 0, tiempos.con || 0);
+
+    for (const modo of ['sin', 'con']) {
+      const sufijo = modo === 'sin' ? 'Sin' : 'Con';
+      const t = tiempos[modo];
+      document.getElementById('barra' + sufijo).style.width = t === null ? '0' : (t / max * 100) + '%';
+      document.getElementById('valor' + sufijo).textContent = t === null ? '—' : t.toFixed(2) + ' ms';
+    }
+
+    const resultado = document.getElementById('resultado');
+    if (tiempos.sin === null || tiempos.con === null) {
+      resultado.textContent = 'Ejecuta las dos consultas para compararlas.';
+    } else if (tiempos.con < tiempos.sin) {
+      const veces = tiempos.sin / Math.max(tiempos.con, 0.01);
+      resultado.textContent = `Con caché fue ${veces.toFixed(0)} veces más rápido.`;
+    } else {
+      resultado.textContent = 'Con caché no fue más rápido: si fue la primera ejecución con caché, vuelve a ejecutarla.';
+    }
+  }
+
+  function mostrar(productos) {
+    document.getElementById('filas').innerHTML = productos.map(p =>
+      `<tr><td>${p.id}</td><td>${escapar(p.nombre)}</td><td>$${p.precio.toFixed(2)}</td></tr>`
+    ).join('');
+  }
+
+  function escapar(texto) {
+    const div = document.createElement('div');
+    div.textContent = texto;
+    return div.innerHTML;
+  }
+</script>
+</body>
+</html>
